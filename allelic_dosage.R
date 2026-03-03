@@ -121,8 +121,11 @@ library(progress)
   data.i<-lapply(as.data.frame(M.maf),function(x){
     
     data.imp<-x
-    data.filter<-x[x != missing]
-    
+      if(is.na(missing)){
+    data.filter<-x[!is.na(x)]   
+      }else{
+    data.filter<-x[x != missing] }
+        
     p<-((2*length(which(data.filter==0)))+length(which(data.filter==1)))/(2*sum(table(data.filter)))
     p2<-2*p
     
@@ -167,6 +170,7 @@ library(progress)
   cat("################################################################################")
   return(results)
 }
+
 
 
 
