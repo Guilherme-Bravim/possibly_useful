@@ -118,7 +118,7 @@ library(progress)
   # data imputation
   # Criterio de imputacao: 2p <= 0.5 : 0 / 0.5 < 2p <= 1.5 : 1 / 1.5 < 2p <= 2 = 2  
   
-  data.i<-lapply(M.maf,function(x){
+  data.i<-lapply(as.data.frame(M.maf),function(x){
     
     data.imp<-x
     data.filter<-x[x != missing]
@@ -167,6 +167,7 @@ library(progress)
   cat("################################################################################")
   return(results)
 }
+
 
 
 
