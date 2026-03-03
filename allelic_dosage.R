@@ -3,7 +3,7 @@
 ################################################################################
 
 
-allelic.dosage<-function(data,missing=NA,callrate=0.90,maf=0.05){
+allelic.dosage<-function(data,missing="NA",callrate=0.90,maf=0.05){
 library(progress)
 
     pb <- progress_bar$new(
@@ -167,6 +167,7 @@ library(progress)
   cat("################################################################################")
   return(results)
 }
+
 
 
 
