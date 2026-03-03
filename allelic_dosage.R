@@ -122,7 +122,7 @@ library(progress)
     
     data.imp<-x
       if(is.na(missing)){
-    data.filter<-x[!is.na(x)]   
+    data.filter<-x[!is.na(missing)]   
       }else{
     data.filter<-x[x != missing] }
         
@@ -170,6 +170,7 @@ library(progress)
   cat("################################################################################")
   return(results)
 }
+
 
 
 
