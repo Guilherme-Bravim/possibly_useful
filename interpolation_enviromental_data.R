@@ -193,9 +193,7 @@ get_envcov <- function(predictors, data.training, data.prediction, lat="LAT", lo
                                  p.crs = st_crs(data.training2),
                                  cpus = 1,
                                  progress = TRUE)
-    
-    env.pred<-as.data.frame(rfsi_prediction,xy=TRUE)
-    
+     
     env.pred <- rfsi_prediction2 %>%
       st_drop_geometry() %>%
       bind_cols(st_coordinates(rfsi_prediction2))%>%
@@ -217,29 +215,3 @@ get_envcov <- function(predictors, data.training, data.prediction, lat="LAT", lo
   saveRDS(Z, file= paste0("interpolated_data_", format(Sys.time(), "%Y-%m-%d_%H-%M"), ".RDS"))
   
 } # Fecha a funcao
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-head(rfsi_prediction$staid)
-head(w$id)
