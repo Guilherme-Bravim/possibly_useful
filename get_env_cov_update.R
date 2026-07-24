@@ -4,10 +4,10 @@
 #'   covariaveis ambientais para pontos nao amostrados via RFSI (Random
 #'   Forest Spatial Interpolation, Sekulic et al. 2020), evitando o
 #'   colapso de memoria em bancos de predicao grandes (ex.: >100 mil
-#'   linhas). Em vez de unir (merge) a tabela completa de predicao a
-#'   cada variavel interpolada, os resultados sao acumulados em lista e
-#'   unidos uma unica vez ao final, alem de liberar memoria (rm/gc) a
-#'   cada variavel e salvar checkpoints periodicos em disco.
+#'   linhas). Os resultados de cada variavel sao gravados diretamente
+#'   em uma matriz pre-alocada de tamanho fixo (nunca em uma lista
+#'   crescente nem via merge/join repetido), alem de liberar memoria
+#'   (rm/gc) a cada variavel e salvar checkpoints periodicos em disco.
 #'
 #' @param predictors Character string com a formula dos preditores
 #'   espaciais do modelo, no formato aceito por rfsi() (ex.:
@@ -51,11 +51,26 @@
 #' @param arquivo.checkpoint Character string com o caminho/nome do
 #'   arquivo RDS usado para salvar e retomar o checkpoint de
 #'   progresso. Padrao "checkpoint_envcov.RDS".
+#' @param usar.inteiro.escalado Logico. Se TRUE, os valores
+#'   interpolados sao arredondados para `casas.decimais` casas e
+#'   armazenados como inteiro multiplicado por 10^casas.decimais (ex.:
+#'   25.437 com 2 casas vira 2544L), ocupando 4 bytes/valor em vez dos
+#'   8 bytes/valor de um double -- reduzindo pela metade a memoria e o
+#'   tamanho em disco do resultado final. Para reverter aos valores
+#'   originais, dividir por 10^casas.decimais (o fator usado fica
+#'   salvo no atributo "fator.escala" do objeto retornado). Padrao
+#'   FALSE (mantem double, comportamento identico ao original).
+#' @param casas.decimais Numero inteiro de casas decimais de precisao
+#'   desejadas. Usado para arredondar o resultado final quando
+#'   `usar.inteiro.escalado = FALSE`, e para definir o fator de escala
+#'   quando `usar.inteiro.escalado = TRUE`. Padrao 2.
 #'
 #' @return Data frame `Z.final`, correspondente a `data.prediction`
 #'   com todas as variaveis alvo (colunas a partir de `from`)
 #'   completamente interpoladas (sem NA). O resultado tambem e salvo
-#'   automaticamente em "new_data_untested_env.RDS".
+#'   automaticamente em "new_data_untested_env.RDS". Se
+#'   `usar.inteiro.escalado = TRUE`, os valores estao em inteiro
+#'   escalado (ver `usar.inteiro.escalado` acima).
 
 library(meteo)
 library(sp)
@@ -78,7 +93,9 @@ get_envcov_otimizada <- function(predictors, data.training, data.prediction,
                                  n.neighbors = c(3:10),
                                  from = 4, crs = 31982, group.cv = "env",
                                  salvar.a.cada = 20,
-                                 arquivo.checkpoint = "checkpoint_envcov.RDS") {
+                                 arquivo.checkpoint = "checkpoint_envcov.RDS",
+                                 usar.inteiro.escalado = FALSE,
+                                 casas.decimais = 2) {
   
   vizinhos <- n.neighbors
   arvores  <- n.trees
@@ -95,16 +112,30 @@ get_envcov_otimizada <- function(predictors, data.training, data.prediction,
   newdata.base[[lon]] <- coords.base[, 1]
   newdata.base[[lat]] <- coords.base[, 2]
   
-  # guarda so lon/lat (para o join final) + lista de resultados por variavel
+  # chave de juncao ESTAVEL: nao confiar na ordem devolvida por pred.rfsi;
+  # cada variavel eh casada de volta por lon/lat via match(), nunca por
+  # posicao de linha
   chave.pred <- data.prediction[, c(lon, lat)]
-  resultados.vars <- vector("list", length(vars))
-  names(resultados.vars) <- vars
+  chave.id   <- paste(chave.pred[[lon]], chave.pred[[lat]], sep = "_")
+  n.pred     <- nrow(chave.pred)
   
-  # retomar de um checkpoint, se existir (ver Passo extra mais abaixo)
+  # ── UNICA estrutura que "cresce": uma matriz pre-alocada de tamanho
+  # fixo. Substitui o acumulo de ~869 data.frames (491465 linhas cada)
+  # que antes eram somente unidos (left_join) no final -> aquele padrao
+  # ainda mantinha tudo em RAM simultaneamente antes do join, e por isso
+  # continuava estourando memoria em bancos com muitas variaveis.
+  resultado.matriz <- matrix(
+    if (usar.inteiro.escalado) NA_integer_ else NA_real_,
+    nrow = n.pred, ncol = length(vars),
+    dimnames = list(NULL, vars)
+  )
+  fator.escala <- 10^casas.decimais  # usado somente se usar.inteiro.escalado = TRUE
+  
+  # retomar de um checkpoint, se existir
   inicio <- 1
   if (file.exists(arquivo.checkpoint)) {
     chk <- readRDS(arquivo.checkpoint)
-    resultados.vars[names(chk$resultados.vars)] <- chk$resultados.vars
+    resultado.matriz[, colnames(chk$resultado.matriz)] <- chk$resultado.matriz
     inicio <- chk$proxima.variavel
     message("Retomando checkpoint a partir da variavel ", inicio, "/", length(vars))
   }
@@ -229,28 +260,45 @@ get_envcov_otimizada <- function(predictors, data.training, data.prediction,
       dplyr::select(!staid)
     colnames(env.pred) <- c(vars[h], lon, lat)
     
-    # guarda so o resultado desta variavel (leve) -> NAO faz merge aqui
-    resultados.vars[[variavel]] <- env.pred
+    # ── grava direto na coluna da matriz, casando por lon/lat ──
+    # match() garante a linha certa mesmo se pred.rfsi devolver em
+    # ordem diferente da original. Nada e acumulado em lista.
+    id.pred    <- paste(env.pred[[lon]], env.pred[[lat]], sep = "_")
+    pos.destino <- match(id.pred, chave.id)
+    valores <- env.pred[[vars[h]]]
+    if (usar.inteiro.escalado) {
+      valores <- as.integer(round(valores * fator.escala))
+    }
+    resultado.matriz[pos.destino, variavel] <- valores
     
     # libera tudo que foi usado nesta variavel
     rm(results, resutados, data.training2, model.train,
-       rfsi_prediction2, env.pred)
+       rfsi_prediction2, env.pred, id.pred, pos.destino, valores)
     gc(verbose = FALSE)
     
     # checkpoint periodico -> se o R cair, voce retoma sem perder tudo
+    # (salva so a matriz, nao mais uma lista de data.frames)
     if (h %% salvar.a.cada == 0 || h == length(vars)) {
-      saveRDS(list(resultados.vars = resultados.vars, proxima.variavel = h + 1),
+      saveRDS(list(resultado.matriz = resultado.matriz, proxima.variavel = h + 1),
               file = arquivo.checkpoint)
       message("  Checkpoint salvo (", h, "/", length(vars), " variaveis)")
     }
   }
   
-  # ── join final: UMA UNICA VEZ, no fim de tudo ──
-  message("Unindo todas as variaveis interpoladas...")
-  Z.final <- chave.pred
-  for (variavel in vars) {
-    if (is.null(resultados.vars[[variavel]])) next
-    Z.final <- dplyr::left_join(Z.final, resultados.vars[[variavel]], by = c(lon, lat))
+  # ── monta o resultado final SEM nenhum merge/join ──
+  # cbind direto: chave.pred e resultado.matriz ja estao na mesma ordem
+  # de linhas (n.pred), entao nao ha custo extra de juncao aqui.
+  message("Montando resultado final...")
+  if (usar.inteiro.escalado) {
+    # mantem como inteiro escalado no RDS (4 bytes/valor, metade do double)
+    # para reverter: as.data.frame(resultado.matriz) / 10^casas.decimais
+    Z.final <- cbind(chave.pred, as.data.frame(resultado.matriz))
+    attr(Z.final, "fator.escala") <- fator.escala
+    message("  Valores salvos como inteiro escalado (fator = ", fator.escala,
+            "). Para reverter: valores / ", fator.escala)
+  } else {
+    resultado.matriz <- round(resultado.matriz, casas.decimais)
+    Z.final <- cbind(chave.pred, as.data.frame(resultado.matriz))
   }
   
   saveRDS(Z.final, file = "new_data_untested_env.RDS")
@@ -260,3 +308,4 @@ get_envcov_otimizada <- function(predictors, data.training, data.prediction,
   
   return(Z.final)
 }
+
